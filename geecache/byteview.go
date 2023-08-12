@@ -4,7 +4,7 @@ type ByteView struct {
 	b []byte //储存一个缓存值
 }
 
-func (v ByteView) Len() int { //实现LRU中的接口
+func (v ByteView) Len() int { //实现LRU中的Value接口
 	return len(v.b)
 }
 
