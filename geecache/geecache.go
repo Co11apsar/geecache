@@ -2,6 +2,7 @@ package geecache
 
 import (
 	"fmt"
+	"geecache/singleflight"
 	"log"
 	"sync"
 )
@@ -21,6 +22,8 @@ type Group struct { //封装经过并发处理的lru，直接与用户交互
 	getter    Getter //缓存未命中时获取源数据的回调
 	mainCache cache  //并发缓存
 	peers     PeerPicker
+
+	loader *singleflight.Group
 }
 
 var (
@@ -39,6 +42,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 
 	groups[name] = g
@@ -73,15 +77,23 @@ func (g *Group) RegisterPeers(peers PeerPicker) { //将实现了 PeerPicker 接�
 }
 
 func (g *Group) load(key string) (value ByteView, err error) { //使用 PickPeer() 方法选择节点，若非本机节点，则调用 getFromPeer() 从远程获取。若是本机节点或失败，则回退到 getLocally()
-	if g.peers != nil {
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.GetFromPeer(peer, key); err == nil {
-				return value, nil
+
+	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.GetFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[GeeCache] Failed to get from peer", err)
 			}
-			log.Println("[GeeCache] Failed to get from peer", err)
 		}
+		return g.getLocally(key) //分布式场景下可能从其它节点处获取数据
+	})
+
+	if err == nil {
+		return viewi.(ByteView), nil
 	}
-	return g.getLocally(key) //分布式场景下可能从其它节点处获取数据
+	return
 }
 
 func (g *Group) GetFromPeer(peer PeerGetter, key string) (ByteView, error) { //使用实现了 PeerGetter 接口的 httpGetter 从访问远程节点，获取缓存值
